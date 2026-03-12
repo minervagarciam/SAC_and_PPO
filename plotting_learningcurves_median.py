@@ -111,7 +111,7 @@ def plot_sac(envs, algorithm, results_dir, output_path):
     for ax_idx in range(len(envs), len(axes)):
         axes[ax_idx].axis("off")
 
-    fig.suptitle("SAC — DM Control Suite (10 seeds)", fontsize=15, fontweight="bold", y=1.01)
+    fig.suptitle("PPO — DM Control Suite (10 seeds)", fontsize=15, fontweight="bold", y=1.01)
     plt.tight_layout()
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
