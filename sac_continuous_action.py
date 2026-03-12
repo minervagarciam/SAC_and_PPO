@@ -214,6 +214,7 @@ class Actor(nn.Module):
 
 
 if __name__ == "__main__":
+    print("Beginning training")
     args = tyro.cli(Args)
     safe_env_id = args.env_id.replace("/", "_")
     run_name = f"{safe_env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"

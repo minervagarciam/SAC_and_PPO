@@ -156,6 +156,7 @@ class Agent(nn.Module):
 
 
 if __name__ == "__main__":
+    print("Beginning training")
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
