@@ -8,6 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --array=0-9
 
+export MUJOCO_GL=disabled
+
 # Load modules
 module load python/3.11
 module load mujoco
