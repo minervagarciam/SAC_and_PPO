@@ -2,7 +2,7 @@
 #SBATCH --account=aip-ashique
 #SBATCH -o logs/job-%A-%a.out
 #SBATCH -e logs/job-%A-%a.err
-#SBATCH --time=00:10:00
+#SBATCH --time=12:00:00
 #SBATCH --mem-per-cpu=8G
 #SBATCH --cpus-per-task=5
 #SBATCH --gres=gpu:1
