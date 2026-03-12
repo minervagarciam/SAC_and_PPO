@@ -1,224 +1,126 @@
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
+import os
+import glob
 import numpy as np
 import pandas as pd
-import regex as re
-from pathlib import Path
-from collections import defaultdict
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 
 
-plt.rcParams.update({
-    "font.serif": ["Times New Roman"],
-    "mathtext.fontset": "stix",
-    "axes.unicode_minus": True,
-    "axes.formatter.use_mathtext": True,
-    "font.size": 20,
-    "axes.labelsize": 20,
-    "xtick.labelsize": 18,
-    "ytick.labelsize": 18,
-    "legend.fontsize": 18,
-    "svg.fonttype":'path',
-})
+# ── Configuration ────────────────────────────────────────────────────────────
 
-CONFIG_COLORS = {
-    "actor_normFalsecritic_normFalse": "#e74c3c",   # red   — baseline
-    "actor_normFalsecritic_normTrue":  "#2ecc71",   # green — critic norm only
-    "actor_normTruecritic_normFalse":  "#3498db",   # blue  — actor norm only
+RESULTS_DIR = "results"
+OUTPUT_PATH = "plots/sac_learning_curves.png"
+ALGORITHM   = "sac_continuous_action"
+
+ENVS = {
+    "dm_control_pendulum-swingup-v0":  "Pendulum Swingup",
+    "dm_control_cartpole-swingup-v0":  "Cartpole Swingup",
+    "dm_control_reacher-easy-v0":      "Reacher Easy",
+    "dm_control_hopper-stand-v0":      "Hopper Stand",
+    "dm_control_cheetah-run-v0":       "Cheetah Run",
 }
 
-CONFIG_LABELS = {
-    "actor_normFalsecritic_normFalse": "No norm (baseline)",
-    "actor_normFalsecritic_normTrue":  "Critic norm only",
-    "actor_normTruecritic_normFalse":  "Actor norm only",
-}
+# Number of points to interpolate each curve onto (for smooth alignment)
+N_INTERP = 1000
 
-BOX_CONFIG_LABELS = {
-    "actor_normFalsecritic_normFalse": "No norm\n (baseline)",
-    "actor_normFalsecritic_normTrue":  "Critic norm\n only",
-    "actor_normTruecritic_normFalse":  "Actor norm\n only",
-}
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def plot_side_by_side(envs: list):
-    fig, axes = plt.subplots(1, len(envs), figsize=(18, 7))
+def load_seed_curves(env_key, algorithm, results_dir):
+    """Load all CSV files for a given environment and algorithm.
+    Returns a list of (timesteps, returns) arrays, one per seed.
+    """
+    pattern = os.path.join(results_dir, f"{env_key}__{algorithm}__*_results.csv")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        print(f"WARNING: No files found for {env_key}")
+        return []
 
-    for ax, env in zip(axes, envs):
-        files_path = Path(f"logs/{env}")
-        all_returns = []
+    curves = []
+    for f in files:
+        df = pd.read_csv(f)
+        if df.empty or len(df) < 2:
+            continue
+        timesteps = df["timestep"].values.astype(float)
+        returns   = df["episodic_return"].values.astype(float)
+        curves.append((timesteps, returns))
 
-        for file in sorted(files_path.iterdir()):
-            if not re.search(r"\dactor_normFalsecritic_normTrue_evals\.csv$", str(file)):
-                continue
-            df = pd.read_csv(file)
-            steps   = df["global_step"].to_numpy()
-            returns = df["eval_return"].to_numpy()
+    return curves
 
-            ax.plot(steps, returns, alpha=0.25, linewidth=1.2, color="#2ecc71")
-            all_returns.append(returns)
 
-        if all_returns:
-            mean_returns = np.nanmean(all_returns, axis=0)
-            ax.plot(steps, mean_returns,
-                    linewidth=2.5,
-                    color="#2ecc71",
-                    label=f"Mean across {len(all_returns)} seeds")
+def interpolate_curves(curves, n_points=N_INTERP):
+    """Interpolate all seed curves onto a common timestep grid."""
+    if not curves:
+        return None, None
 
-        ax.set_xlabel("Time steps")
-        ax.set_ylabel("Episodic return")
-        ax.set_title(f"SAC {env}")
-        for spine in ['bottom', 'left']:
-            ax.spines[spine].set_linewidth(1)
-            ax.spines[spine].set_color('black')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+    # common x axis: from the max of all minimums to the min of all maximums
+    x_min = max(c[0][0]  for c in curves)
+    x_max = min(c[0][-1] for c in curves)
 
-        ax.set_xlabel("Time steps")
-        ax.set_ylabel("Episodic return")
-        ax.set_title(f"{env}")
-        ax.legend().set_visible(False)   # hide on all subplots
+    if x_min >= x_max:
+        # fallback: use the global range
+        x_min = min(c[0][0]  for c in curves)
+        x_max = max(c[0][-1] for c in curves)
+
+    x_common = np.linspace(x_min, x_max, n_points)
+
+    interpolated = []
+    for timesteps, returns in curves:
+        y_interp = np.interp(x_common, timesteps, returns)
+        interpolated.append(y_interp)
+
+    return x_common, np.array(interpolated)  # shape: (n_seeds, n_points)
+
+
+# ── Plotting ──────────────────────────────────────────────────────────────────
+
+def plot_sac(envs, algorithm, results_dir, output_path):
+    n_envs = len(envs)
+    ncols  = 3
+    nrows  = int(np.ceil(n_envs / ncols))
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows))
+    axes = axes.flatten()
+
+    for ax_idx, (env_key, env_name) in enumerate(envs.items()):
+        ax = axes[ax_idx]
+
+        curves = load_seed_curves(env_key, algorithm, results_dir)
+        if not curves:
+            ax.set_title(f"{env_name}\n(no data)")
+            ax.axis("off")
+            continue
+
+        x_common, y_matrix = interpolate_curves(curves)
+
+        # plot each seed as a thin, faint line
+        for y_seed in y_matrix:
+            ax.plot(x_common, y_seed, color="steelblue", alpha=0.25, linewidth=0.8)
+
+        # bold median curve
+        y_median = np.median(y_matrix, axis=0)
+        ax.plot(x_common, y_median, color="steelblue", linewidth=2.5, label="Median")
+
+        ax.set_title(env_name, fontsize=13, fontweight="bold")
+        ax.set_xlabel("Environment Steps", fontsize=10)
+        ax.set_ylabel("Episodic Return", fontsize=10)
+        ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x/1e6)}M" if x >= 1e6 else f"{int(x/1e3)}K"))
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
-        # Deduplicate handles and labels
-        handles, labels = axes[0].get_legend_handles_labels()
+    # hide any unused subplots
+    for ax_idx in range(len(envs), len(axes)):
+        axes[ax_idx].axis("off")
 
-        legend = fig.legend(
-            handles, labels,
-            loc='lower center',
-            bbox_to_anchor=(0.5, 0),
-            ncol=3,                  # one column per condition
-            frameon=True,
-            edgecolor='lightgray',
-            facecolor='white',
-            framealpha=1,
-        )
-        legend.get_frame().set_linewidth(1.5)
-
-        plt.tight_layout(rect=[0, 0.08, 1, 1])  # leave 8% space at bottom for legend
-        plt.savefig(Path("logs") / f"eval_returns_critic_combined.svg",
-                    format="svg", bbox_inches="tight")
-        plt.show()
-
-def extract_config(filename: str,file_suffix:str) -> str:
-    # Strip env prefix and _evals suffix, then remove seed number
-    after_seed = filename.split("seed")[1]          # "2actor_normFalsecritic_normTrue_evals"
-    after_seed = after_seed.lstrip("0123456789")    # "actor_normFalsecritic_normTrue_evals"
-    config = after_seed.replace(file_suffix.replace(".csv",""), "")   # "actor_normFalsecritic_normTrue"
-    return config
-
-
-def plot_configs_side_by_side(envs: list, file_suffix: str = "_evals.csv", column: str = "eval_return", log_interval: int = 1):
-    fig, axes = plt.subplots(1, len(envs), figsize=(18, 7), dpi=100)
-
-
-    for ax, env in zip(axes, envs):
-        logs_path  = Path(f"logs/{env}")
-        config_data = defaultdict(list)
-
-        for file in sorted(logs_path.iterdir()):
-            if not str(file).endswith(file_suffix):
-                continue
-            df = pd.read_csv(file)
-            if df.empty:
-                continue
-
-            config = extract_config(file.stem, file_suffix)
-            values = df[column].to_numpy()
-
-            if "global_step" in df.columns:
-                steps = df["global_step"].to_numpy()
-            else:
-                steps = np.arange(1, len(values) + 1) * log_interval
-
-            config_data[config].append((steps, values))
-
-        for config, seed_runs in config_data.items():
-            color = CONFIG_COLORS.get(config, "#888888")
-            label = CONFIG_LABELS.get(config, config)
-
-            min_len     = min(len(s) for _, s in seed_runs)
-            all_values  = np.array([s[:min_len] for _, s in seed_runs])
-            all_steps   = seed_runs[0][0][:min_len]
-            mean_values = np.nanmean(all_values, axis=0)
-
-            ax.plot(all_steps, mean_values, color=color, linewidth=2.5, label=label)
-
-        for spine in ['bottom', 'left']:
-            ax.spines[spine].set_linewidth(1)
-            ax.spines[spine].set_color('black')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-        ax.set_xlabel("Time steps")
-        ax.set_ylabel("Episodic return")
-        ax.set_title(f"{env}")
-        ax.legend().set_visible(False)   # hide on all subplots
-        ax.grid(True, alpha=0.3)
-
-    # Deduplicate handles and labels
-    handles, labels = axes[0].get_legend_handles_labels()
-
-    legend = fig.legend(
-        handles, labels,
-        loc='lower center',
-        bbox_to_anchor=(0.5, 0),
-        ncol=3,                  # one column per condition
-        frameon=True,
-        edgecolor='lightgray',
-        facecolor='white',
-        framealpha=1,
-    )
-    legend.get_frame().set_linewidth(1.5)
-
-    plt.tight_layout(rect=[0, 0.08, 1, 1])  # leave 8% space at bottom for legend
-    plt.savefig(Path("logs") / f"layernorm_ablation_{column}_combined.svg",
-                format="svg", bbox_inches="tight")
-    plt.show()
-
-def plot_configs(files_path: Path, file_suffix: str = "_evals.csv", column: str = "eval_return", log_interval:int=1):
-    config_data = defaultdict(list)
-
-    for file in sorted(files_path.iterdir()):
-        if not str(file).endswith(file_suffix):
-            continue
-        df = pd.read_csv(file)
-        if df.empty:
-            continue
-        
-        config = extract_config(file.stem,file_suffix)
-        values = df[column].to_numpy()
-
-        if "global_step" in df.columns:
-            steps = df["global_step"].to_numpy()
-        else:
-            steps = np.arange(1, len(values) + 1) * log_interval
-
-        config_data[config].append((steps, values))
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    for config, seed_runs in config_data.items():
-        color = CONFIG_COLORS.get(config, "#888888")
-        label = CONFIG_LABELS.get(config, config)
-
-        min_len    = min(len(s) for _, s in seed_runs)
-        all_values = np.array([s[:min_len] for _, s in seed_runs])
-        all_steps  = seed_runs[0][0][:min_len]
-        mean_values = np.nanmean(all_values, axis=0)
-
-        ax.plot(all_steps, mean_values,
-                color=color, linewidth=2.5, label=label)
-    ax.set_xlabel("Time steps")
-    ax.set_ylabel("Episodic return")
-    ax.set_title(f"SAC {env}")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
-
+    fig.suptitle("SAC — DM Control Suite (10 seeds)", fontsize=15, fontweight="bold", y=1.01)
     plt.tight_layout()
-    plt.savefig(files_path / f"{env}_layernorm_ablation_{column}.svg", format='svg')
 
-LAST_20_PCT_START = 800_000  # steps 800k–1M
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved to {output_path}")
+    plt.close()
 
-envs = ["Ant-v4", "Walker2d-v4"]
 
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-plot_configs_side_by_side(envs, file_suffix="_evals.csv", column="eval_return")
-plot_side_by_side(envs)
+if __name__ == "__main__":
+    plot_sac(ENVS, ALGORITHM, RESULTS_DIR, OUTPUT_PATH)
