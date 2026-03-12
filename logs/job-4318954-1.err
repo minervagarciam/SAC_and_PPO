@@ -8,3 +8,4 @@
   warnings.warn(message)
 /project/aip-ashique/garciam1/SAC_and_PPO/venv/lib/python3.11/site-packages/tyro/_parsers.py:353: UserWarning: The field `target-kl` is annotated with type `<class 'float'>`, but the default value `None` has type `<class 'NoneType'>`. We'll try to handle this gracefully, but it may cause unexpected behavior.
   warnings.warn(message)
+[2026-03-12T20:33:06.008] error: *** JOB 4318986 ON rack07-07 CANCELLED AT 2026-03-12T20:33:06 DUE TO TIME LIMIT ***
