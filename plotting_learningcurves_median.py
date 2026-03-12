@@ -9,8 +9,8 @@ import matplotlib.ticker as ticker
 # ── Configuration ────────────────────────────────────────────────────────────
 
 RESULTS_DIR = "results"
-OUTPUT_PATH = "plots/sac_learning_curves.png"
-ALGORITHM   = "sac_continuous_action"
+OUTPUT_PATH = "plots/ppo_learning_curves.png"
+ALGORITHM   = "ppo_continuous_action"
 
 ENVS = {
     "dm_control_pendulum-swingup-v0":  "Pendulum Swingup",
