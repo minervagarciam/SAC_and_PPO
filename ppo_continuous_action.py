@@ -3,9 +3,6 @@ import random
 import time
 from dataclasses import dataclass
 import csv
-import shimmy
-import dm_control
-
 import gymnasium as gym
 import numpy as np
 import torch
@@ -13,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.normal import Normal
+import shimmy  # registers dm_control environments with gymnasium
 
 
 @dataclass
@@ -75,6 +73,27 @@ class Args:
     """the number of iterations (computed in runtime)"""
 
 
+class RawRewardTracker(gym.Wrapper):
+    """Accumulates raw episodic return before normalization wrappers modify it.
+    Stores the full episode return in info['raw_episodic_return'] at episode end.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        self._ep_return = 0.0
+
+    def reset(self, **kwargs):
+        self._ep_return = 0.0
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self._ep_return += reward
+        if terminated or truncated:
+            info["raw_episodic_return"] = self._ep_return
+            self._ep_return = 0.0
+        return obs, reward, terminated, truncated, info
+
+
 def make_env(env_id, idx, capture_video, run_name, gamma):
     def thunk():
         if capture_video and idx == 0:
@@ -83,7 +102,7 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.FlattenObservation(env)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = RawRewardTracker(env)  # must be before any reward-modifying wrappers
         env = gym.wrappers.ClipAction(env)
         env = gym.wrappers.NormalizeObservation(env)
         env = gym.wrappers.TransformObservation(
@@ -202,13 +221,13 @@ if __name__ == "__main__":
                 next_obs = torch.Tensor(next_obs).to(device)
                 next_done = torch.Tensor(next_done).to(device)
 
-                if "final_info" in infos:
-                    for info in infos["final_info"]:
-                        if info and "episode" in info:
-                            ep_return = float(info["episode"]["r"])  # fix: ensure scalar, not array
-                            print(f"global_step={global_step}, episodic_return={ep_return}")
-                            csv_writer.writerow([global_step, ep_return])
-                            csv_file.flush()
+                # log raw episodic return accumulated by RawRewardTracker
+                for i, (term, trunc) in enumerate(zip(terminations, truncations)):
+                    if term or trunc:
+                        ep_return = float(infos["raw_episodic_return"][i])
+                        print(f"global_step={global_step}, episodic_return={ep_return:.2f}")
+                        csv_writer.writerow([global_step, ep_return])
+                        csv_file.flush()
 
             with torch.no_grad():
                 next_value = agent.get_value(next_obs).reshape(1, -1)
