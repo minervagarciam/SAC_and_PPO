@@ -22,20 +22,20 @@ parallel --jobs 5 -u :::\
     "python ppo_continuous_action.py \
         --env_id dm_control/pendulum-swingup-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 1000000"\
+        --total_timesteps 10000000"\
     "python ppo_continuous_action.py \
         --env_id dm_control/cartpole-swingup-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 1000000" \
+        --total_timesteps 10000000" \
     "python ppo_continuous_action.py \
         --env_id dm_control/reacher-easy-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 1000000" \
+        --total_timesteps 10000000" \
     "python ppo_continuous_action.py \
         --env_id dm_control/hopper-stand-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 1000000" \
+        --total_timesteps 10000000" \
     "python ppo_continuous_action.py \
         --env_id dm_control/cheetah-run-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 1000000" 
+        --total_timesteps 10000000" 
