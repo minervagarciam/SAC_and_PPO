@@ -1,8 +1,8 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/sac/#sac_continuous_actionpy
 import os
 import random
 import time
 from dataclasses import dataclass
+import csv
 
 import gymnasium as gym
 import numpy as np
@@ -11,9 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-from torch.utils.tensorboard import SummaryWriter
-
-from cleanrl_utils.buffers import ReplayBuffer
+import shimmy  # registers dm_control environments with gymnasium
 
 
 @dataclass
@@ -26,19 +24,13 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
-    wandb_entity: str = None
-    """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Hopper-v4"
+    env_id: str = "dm_control/pendulum-swingup-v0"
     """the environment id of the task"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 100000
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -47,23 +39,46 @@ class Args:
     gamma: float = 0.99
     """the discount factor gamma"""
     tau: float = 0.005
-    """target smoothing coefficient (default: 0.005)"""
+    """target smoothing coefficient"""
     batch_size: int = 256
-    """the batch size of sample from the reply memory"""
-    learning_starts: int = 5e3
+    """the batch size of sample from the replay memory"""
+    learning_starts: int = 5000
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
     q_lr: float = 1e-3
-    """the learning rate of the Q network network optimizer"""
+    """the learning rate of the Q network optimizer"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
-    target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
-    """the frequency of updates for the target nerworks"""
+    target_network_frequency: int = 1
+    """the frequency of updates for the target networks"""
     alpha: float = 0.2
-    """Entropy regularization coefficient."""
+    """entropy regularization coefficient"""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
+    max_grad_norm: float = 1.0
+    """the maximum norm for gradient clipping"""
+
+
+class RawRewardTracker(gym.Wrapper):
+    """Accumulates raw episodic return before any reward-modifying wrappers.
+    Stores the full episode return in info['raw_episodic_return'] at episode end.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        self._ep_return = 0.0
+
+    def reset(self, **kwargs):
+        self._ep_return = 0.0
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self._ep_return += reward
+        if terminated or truncated:
+            info["raw_episodic_return"] = self._ep_return
+            self._ep_return = 0.0
+        return obs, reward, terminated, truncated, info
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -73,26 +88,72 @@ def make_env(env_id, seed, idx, capture_video, run_name):
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
             env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = gym.wrappers.FlattenObservation(env)
+        env = RawRewardTracker(env)  # must be before any reward-modifying wrappers
+        env = gym.wrappers.ClipAction(env)
+        env = gym.wrappers.NormalizeObservation(env)
+        env = gym.wrappers.TransformObservation(
+            env,
+            lambda obs: np.clip(obs, -10, 10),
+            env.observation_space,
+        )
         env.action_space.seed(seed)
         return env
 
     return thunk
 
 
-# ALGO LOGIC: initialize agent here:
+class ReplayBuffer:
+    """Simple replay buffer that stores transitions and samples random batches."""
+    def __init__(self, buffer_size, obs_shape, action_shape, device):
+        self.buffer_size = buffer_size
+        self.device = device
+        self.pos = 0
+        self.full = False
+
+        self.observations = np.zeros((buffer_size, *obs_shape), dtype=np.float32)
+        self.next_observations = np.zeros((buffer_size, *obs_shape), dtype=np.float32)
+        self.actions = np.zeros((buffer_size, *action_shape), dtype=np.float32)
+        self.rewards = np.zeros((buffer_size,), dtype=np.float32)
+        self.dones = np.zeros((buffer_size,), dtype=np.float32)
+
+    def add(self, obs, next_obs, action, reward, done):
+        self.observations[self.pos] = obs
+        self.next_observations[self.pos] = next_obs
+        self.actions[self.pos] = action
+        self.rewards[self.pos] = reward
+        self.dones[self.pos] = done
+
+        self.pos = (self.pos + 1) % self.buffer_size
+        self.full = self.full or self.pos == 0
+
+    def sample(self, batch_size):
+        max_idx = self.buffer_size if self.full else self.pos
+        indices = np.random.randint(0, max_idx, size=batch_size)
+
+        return (
+            torch.tensor(self.observations[indices], dtype=torch.float32).to(self.device),
+            torch.tensor(self.next_observations[indices], dtype=torch.float32).to(self.device),
+            torch.tensor(self.actions[indices], dtype=torch.float32).to(self.device),
+            torch.tensor(self.rewards[indices], dtype=torch.float32).to(self.device),
+            torch.tensor(self.dones[indices], dtype=torch.float32).to(self.device),
+        )
+
+    def __len__(self):
+        return self.buffer_size if self.full else self.pos
+
+
 class SoftQNetwork(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(
-            np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape),
-            256,
-        )
+        obs_dim = np.array(env.single_observation_space.shape).prod()
+        action_dim = np.prod(env.single_action_space.shape)
+        self.fc1 = nn.Linear(obs_dim + action_dim, 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, 1)
 
     def forward(self, x, a):
-        x = torch.cat([x, a], 1)
+        x = torch.cat([x, a], dim=1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -106,22 +167,24 @@ LOG_STD_MIN = -5
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
+        obs_dim = np.array(env.single_observation_space.shape).prod()
+        action_dim = np.prod(env.single_action_space.shape)
+        self.fc1 = nn.Linear(obs_dim, 256)
         self.fc2 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
-        self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
-        # action rescaling
+        self.fc_mean = nn.Linear(256, action_dim)
+        self.fc_logstd = nn.Linear(256, action_dim)
+        # action rescaling to match environment's action space
         self.register_buffer(
             "action_scale",
             torch.tensor(
-                (env.single_action_space.high - env.single_action_space.low) / 2.0,
+                (np.clip(env.single_action_space.high, -1, 1) - np.clip(env.single_action_space.low, -1, 1)) / 2.0,
                 dtype=torch.float32,
             ),
         )
         self.register_buffer(
             "action_bias",
             torch.tensor(
-                (env.single_action_space.high + env.single_action_space.low) / 2.0,
+                (np.clip(env.single_action_space.high, -1, 1) + np.clip(env.single_action_space.low, -1, 1)) / 2.0,
                 dtype=torch.float32,
             ),
         )
@@ -132,19 +195,18 @@ class Actor(nn.Module):
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
         log_std = torch.tanh(log_std)
-        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)  # From SpinUp / Denis Yarats
-
+        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
         return mean, log_std
 
     def get_action(self, x):
         mean, log_std = self(x)
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
-        x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
+        x_t = normal.rsample()  # reparameterization trick
         y_t = torch.tanh(x_t)
         action = y_t * self.action_scale + self.action_bias
         log_prob = normal.log_prob(x_t)
-        # Enforcing Action Bound
+        # enforcing action bounds
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
@@ -152,28 +214,10 @@ class Actor(nn.Module):
 
 
 if __name__ == "__main__":
-
     args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-        import wandb
+    safe_env_id = args.env_id.replace("/", "_")
+    run_name = f"{safe_env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
 
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            sync_tensorboard=True,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
-    writer = SummaryWriter(f"runs/{run_name}")
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-    )
-
-    # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -187,8 +231,6 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
-    max_action = float(envs.single_action_space.high[0])
-
     actor = Actor(envs).to(device)
     qf1 = SoftQNetwork(envs).to(device)
     qf2 = SoftQNetwork(envs).to(device)
@@ -199,7 +241,7 @@ if __name__ == "__main__":
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
-    # Automatic entropy tuning
+    # automatic entropy tuning
     if args.autotune:
         target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
@@ -208,117 +250,108 @@ if __name__ == "__main__":
     else:
         alpha = args.alpha
 
-    envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
         args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
+        envs.single_observation_space.shape,
+        envs.single_action_space.shape,
         device,
-        n_envs=args.num_envs,
-        handle_timeout_termination=False,
     )
+
     start_time = time.time()
-
-    # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
-        # ALGO LOGIC: put action logic here
-        if global_step < args.learning_starts:
-            actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        else:
-            actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
-            actions = actions.detach().cpu().numpy()
 
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+    csv_path = f"{run_name}_results.csv"
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if info is not None:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                    break
+    try:
+        csv_file = open(csv_path, "w", newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(["timestep", "episodic_return"])
 
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+        for global_step in range(args.total_timesteps):
+            # select action
+            if global_step < args.learning_starts:
+                actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+            else:
+                actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
+                actions = actions.detach().cpu().numpy()
 
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
-            with torch.no_grad():
-                next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
-                qf1_next_target = qf1_target(data.next_observations, next_state_actions)
-                qf2_next_target = qf2_target(data.next_observations, next_state_actions)
-                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
-                next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1)
+            # log episodic return at episode end
+            for i, (term, trunc) in enumerate(zip(terminations, truncations)):
+                if term or trunc:
+                    ep_return = float(infos["raw_episodic_return"][i])
+                    print(f"global_step={global_step}, episodic_return={ep_return:.2f}")
+                    csv_writer.writerow([global_step, ep_return])
+                    csv_file.flush()
 
-            qf1_a_values = qf1(data.observations, data.actions).view(-1)
-            qf2_a_values = qf2(data.observations, data.actions).view(-1)
-            qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-            qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
-            qf_loss = qf1_loss + qf2_loss
+            # handle truncation: use real next_obs for the buffer, not the reset obs
+            real_next_obs = next_obs.copy()
+            for idx, trunc in enumerate(truncations):
+                if trunc and "final_observation" in infos:
+                    real_next_obs[idx] = infos["final_observation"][idx]
 
-            # optimize the model
-            q_optimizer.zero_grad()
-            qf_loss.backward()
-            q_optimizer.step()
+            # store transition in replay buffer
+            rb.add(obs[0], real_next_obs[0], actions[0], rewards[0], terminations[0])
 
-            if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
-                for _ in range(
-                    args.policy_frequency
-                ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
-                    pi, log_pi, _ = actor.get_action(data.observations)
-                    qf1_pi = qf1(data.observations, pi)
-                    qf2_pi = qf2(data.observations, pi)
-                    min_qf_pi = torch.min(qf1_pi, qf2_pi)
-                    actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
+            obs = next_obs
 
-                    actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
+            # training
+            if global_step >= args.learning_starts:
+                observations, next_observations, act, rews, dones = rb.sample(args.batch_size)
 
-                    if args.autotune:
-                        with torch.no_grad():
-                            _, log_pi, _ = actor.get_action(data.observations)
-                        alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
+                with torch.no_grad():
+                    next_state_actions, next_state_log_pi, _ = actor.get_action(next_observations)
+                    qf1_next_target = qf1_target(next_observations, next_state_actions)
+                    qf2_next_target = qf2_target(next_observations, next_state_actions)
+                    min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+                    next_q_value = rews + (1 - dones) * args.gamma * min_qf_next_target.view(-1)
 
-                        a_optimizer.zero_grad()
-                        alpha_loss.backward()
-                        a_optimizer.step()
-                        alpha = log_alpha.exp().item()
+                qf1_a_values = qf1(observations, act).view(-1)
+                qf2_a_values = qf2(observations, act).view(-1)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+                qf_loss = qf1_loss + qf2_loss
 
-            # update the target networks
-            if global_step % args.target_network_frequency == 0:
-                for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                    target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-            if global_step % 100 == 0:
-                writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                writer.add_scalar("losses/alpha", alpha, global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
-                writer.add_scalar(
-                    "charts/SPS",
-                    int(global_step / (time.time() - start_time)),
-                    global_step,
+                q_optimizer.zero_grad()
+                qf_loss.backward()
+                nn.utils.clip_grad_norm_(
+                    list(qf1.parameters()) + list(qf2.parameters()), args.max_grad_norm
                 )
-                if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+                q_optimizer.step()
 
-    envs.close()
-    writer.close()
+                if global_step % args.policy_frequency == 0:
+                    for _ in range(args.policy_frequency):
+                        pi, log_pi, _ = actor.get_action(observations)
+                        qf1_pi = qf1(observations, pi)
+                        qf2_pi = qf2(observations, pi)
+                        min_qf_pi = torch.min(qf1_pi, qf2_pi)
+                        actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
+
+                        actor_optimizer.zero_grad()
+                        actor_loss.backward()
+                        nn.utils.clip_grad_norm_(actor.parameters(), args.max_grad_norm)
+                        actor_optimizer.step()
+
+                        if args.autotune:
+                            with torch.no_grad():
+                                _, log_pi, _ = actor.get_action(observations)
+                            alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
+
+                            a_optimizer.zero_grad()
+                            alpha_loss.backward()
+                            a_optimizer.step()
+                            alpha = log_alpha.exp().item()
+
+                if global_step % args.target_network_frequency == 0:
+                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+
+                if global_step % 1000 == 0:
+                    print("SPS:", int(global_step / (time.time() - start_time)))
+
+    finally:
+        envs.close()
+        csv_file.close()
