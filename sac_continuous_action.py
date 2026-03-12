@@ -260,7 +260,8 @@ if __name__ == "__main__":
     start_time = time.time()
     obs, _ = envs.reset(seed=args.seed)
 
-    csv_path = f"{run_name}_results.csv"
+    os.makedirs("results", exist_ok=True)
+    csv_path = os.path.join("results", f"{run_name}_results.csv")
 
     try:
         csv_file = open(csv_path, "w", newline="")

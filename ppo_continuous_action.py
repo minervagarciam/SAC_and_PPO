@@ -191,7 +191,8 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    csv_path = f"{run_name}_results.csv"
+    os.makedirs("results", exist_ok=True)
+    csv_path = os.path.join("results", f"{run_name}_results.csv")
 
     try:
         csv_file = open(csv_path, "w", newline="")
