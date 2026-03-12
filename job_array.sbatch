@@ -17,29 +17,25 @@ module load mujoco
 # Activate virtual environment
 source venv/bin/activate
 
-echo "Task ID: $SLURM_ARRAY_TASK_ID"
-echo "Python: $(which python)"
-echo "Working dir: $(pwd)"
-
 # Run SAC
 parallel --jobs 5 -u :::\
     "python sac_continuous_action.py \
-        --env_id 'dm_control/pendulum-swingup-v0' \
+        --env_id dm_control/pendulum-swingup-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
         --total_timesteps 1000000"\
     "python sac_continuous_action.py \
-        --env_id 'dm_control/cartpole-swingup-v0' \
+        --env_id dm_control/cartpole-swingup-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
         --total_timesteps 1000000" \
     "python sac_continuous_action.py \
-        --env_id 'dm_control/reacher-easy-v0' \
+        --env_id dm_control/reacher-easy-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
         --total_timesteps 1000000" \
     "python sac_continuous_action.py \
-        --env_id 'dm_control/hopper-stand-v0' \
+        --env_id dm_control/hopper-stand-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
         --total_timesteps 1000000" \
     "python sac_continuous_action.py \
-        --env_id 'dm_control/cheetah-run-v0' \
+        --env_id dm_control/cheetah-run-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
         --total_timesteps 1000000" 
