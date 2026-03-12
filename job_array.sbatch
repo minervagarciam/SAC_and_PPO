@@ -17,6 +17,10 @@ module load mujoco
 # Activate virtual environment
 source venv/bin/activate
 
+echo "Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Python: $(which python)"
+echo "Working dir: $(pwd)"
+
 # Run SAC
 parallel --jobs 5 -u :::\
 "python sac_continuous_action.py \
