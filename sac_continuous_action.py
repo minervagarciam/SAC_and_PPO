@@ -211,6 +211,7 @@ class Actor(nn.Module):
         log_prob = log_prob.sum(1, keepdim=True)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
+        #no_grad
 
 
 if __name__ == "__main__":
@@ -274,8 +275,9 @@ if __name__ == "__main__":
             if global_step < args.learning_starts:
                 actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
             else:
-                actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
-                actions = actions.detach().cpu().numpy()
+                with torch.no_grad():
+                    actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
+                    actions = actions.detach().cpu().numpy()
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
