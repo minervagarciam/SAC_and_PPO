@@ -56,7 +56,7 @@ class Args:
     """entropy regularization coefficient"""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 10.0
     """the maximum norm for gradient clipping"""
 
 
@@ -91,12 +91,12 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         env = gym.wrappers.FlattenObservation(env)
         env = RawRewardTracker(env)  # must be before any reward-modifying wrappers
         env = gym.wrappers.ClipAction(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        env = gym.wrappers.TransformObservation(
-            env,
-            lambda obs: np.clip(obs, -10, 10),
-            env.observation_space,
-        )
+        # env = gym.wrappers.NormalizeObservation(env)
+        # env = gym.wrappers.TransformObservation(
+        #     env,
+        #     lambda obs: np.clip(obs, -10, 10),
+        #     env.observation_space,
+        # )
         env.action_space.seed(seed)
         return env
 
