@@ -71,7 +71,7 @@ def bin_curve(timesteps, returns, n_bins=N_BINS):
 
 def compute_auc(timesteps, returns):
     """Compute area under the curve using the trapezoidal rule."""
-    return np.trapz(returns, timesteps)
+    return np.trapezoid(returns, timesteps)
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
