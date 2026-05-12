@@ -9,8 +9,8 @@ import matplotlib.ticker as ticker
 # ── Configuration ────────────────────────────────────────────────────────────
 
 RESULTS_DIR = "results"
-OUTPUT_PATH = "plots/sac_learning_curves.png"
-ALGORITHM   = "sac_continuous_action"
+OUTPUT_PATH = "plots/ppo_learning_curves.png"
+ALGORITHM   = "ppo_continuous_action"
 
 ENVS = {
     "dm_control_pendulum-swingup-v0":  "Pendulum Swingup",
@@ -128,7 +128,7 @@ def plot_sac(envs, algorithm, results_dir, output_path):
     for ax_idx in range(len(envs), len(axes)):
         axes[ax_idx].axis("off")
 
-    fig.suptitle("SAC — DM Control Suite (100 seeds)", fontsize=15, fontweight="bold", y=1.01)
+    fig.suptitle("PPO — DM Control Suite (100 seeds)", fontsize=15, fontweight="bold", y=1.01)
     plt.tight_layout()
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
