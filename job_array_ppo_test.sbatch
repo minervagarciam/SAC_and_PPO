@@ -4,7 +4,7 @@
 #SBATCH -e logs/job-%A-%a.err
 #SBATCH --time=24:00:00
 #SBATCH --mem-per-cpu=2G
-#SBATCH --cpus-per-task=5
+#SBATCH --cpus-per-task=2
 #SBATCH --array=0-19
 
 export MUJOCO_GL=disabled
@@ -17,19 +17,7 @@ module load mujoco
 source venv/bin/activate
 
 # Run ppo
-parallel --jobs 5 -u :::\
-    "python ppo_continuous_action.py \
-        --env_id dm_control/pendulum-swingup-v0 \
-        --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 10000000"\
-    "python ppo_continuous_action.py \
-        --env_id dm_control/cartpole-swingup-v0 \
-        --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 10000000" \
-    "python ppo_continuous_action.py \
-        --env_id dm_control/reacher-easy-v0 \
-        --seed $SLURM_ARRAY_TASK_ID \
-        --total_timesteps 10000000" \
+parallel --jobs 2 -u :::\
     "python ppo_continuous_action.py \
         --env_id dm_control/hopper-stand-v0 \
         --seed $SLURM_ARRAY_TASK_ID \
