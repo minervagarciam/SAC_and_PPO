@@ -1,2 +1,2 @@
-PPO plot corresponds to final set of experiments
+PPO plot corresponds to last 256 NN set of experiments
 SAC plot corresponds to third set of experiments
