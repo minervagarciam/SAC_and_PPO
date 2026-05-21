@@ -124,9 +124,9 @@ def plot_sac(envs, algorithm, results_dir, output_path):
         x50, y50 = binned_curves[idx_p50]
         x95, y95 = binned_curves[idx_p95]
 
-        ax.plot(x5,  y5,  color="steelblue", linewidth=1.2, linestyle="--", label="5th percentile seed")
-        ax.plot(x95, y95, color="steelblue", linewidth=1.2, linestyle="--", label="95th percentile seed")
-        ax.plot(x50, y50, color="steelblue", linewidth=2.5, linestyle="-",  label="Median AUC seed")
+        ax.plot(x5,  y5,  color="steelblue", linewidth=2.0, linestyle="-", label="5th percentile seed")
+        ax.plot(x95, y95, color="steelblue", linewidth=2.0, linestyle="-", label="95th percentile seed")
+        ax.plot(x50, y50, color="steelblue", linewidth=2.0, linestyle="--",  label="Median AUC seed")
 
         ax.set_title(env_name, fontsize=13, fontweight="bold")
         ax.set_xlabel("Environment Steps", fontsize=10)
