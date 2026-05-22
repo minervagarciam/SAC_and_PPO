@@ -9,7 +9,7 @@ import matplotlib.ticker as ticker
 # ── Configuration ────────────────────────────────────────────────────────────
 
 RESULTS_DIR = "results"
-OUTPUT_PATH = "plots/ppo_learning_curves.png"
+OUTPUT_DIR  = "plots"
 ALGORITHM   = "ppo_continuous_action"
 
 ENVS = {
@@ -82,23 +82,15 @@ def find_percentile_seed(aucs, percentile):
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-def plot_sac(envs, algorithm, results_dir, output_path):
-    n_envs = len(envs)
-    ncols  = 3
-    nrows  = int(np.ceil(n_envs / ncols))
+def plot_env(env_key, env_name, algorithm, results_dir, output_dir):
+    curves = load_seed_curves(env_key, algorithm, results_dir)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows))
-    axes = axes.flatten()
+    fig, ax = plt.subplots(figsize=(8, 5))
 
-    for ax_idx, (env_key, env_name) in enumerate(envs.items()):
-        ax = axes[ax_idx]
-
-        curves = load_seed_curves(env_key, algorithm, results_dir)
-        if not curves:
-            ax.set_title(f"{env_name}\n(no data)")
-            ax.axis("off")
-            continue
-
+    if not curves:
+        ax.set_title(f"{env_name}\n(no data)")
+        ax.axis("off")
+    else:
         # bin each seed curve independently to N_BINS points
         binned_curves = []
         aucs = []
@@ -124,9 +116,9 @@ def plot_sac(envs, algorithm, results_dir, output_path):
         x50, y50 = binned_curves[idx_p50]
         x95, y95 = binned_curves[idx_p95]
 
-        ax.plot(x5,  y5,  color="steelblue", linewidth=2.0, linestyle="-", label="5th percentile seed")
-        ax.plot(x95, y95, color="steelblue", linewidth=2.0, linestyle="-", label="95th percentile seed")
-        ax.plot(x50, y50, color="steelblue", linewidth=2.0, linestyle="--",  label="Median AUC seed")
+        ax.plot(x5,  y5,  color="steelblue", linewidth=2.0, linestyle="-",  label="5th percentile seed")
+        ax.plot(x95, y95, color="steelblue", linewidth=2.0, linestyle="-",  label="95th percentile seed")
+        ax.plot(x50, y50, color="steelblue", linewidth=2.0, linestyle="--", label="Median AUC seed")
 
         ax.set_title(env_name, fontsize=13, fontweight="bold")
         ax.set_xlabel("Environment Steps", fontsize=10)
@@ -138,20 +130,23 @@ def plot_sac(envs, algorithm, results_dir, output_path):
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
-    # hide any unused subplots
-    for ax_idx in range(len(envs), len(axes)):
-        axes[ax_idx].axis("off")
-
-    fig.suptitle("PPO — DM Control Suite (100 seeds)", fontsize=15, fontweight="bold", y=1.01)
     plt.tight_layout()
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    # use the env_key as the filename, replacing slashes just in case
+    safe_name = env_key.replace("/", "_")
+    output_path = os.path.join(output_dir, f"ppo_{safe_name}.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
     plt.close()
 
 
+def plot_all(envs, algorithm, results_dir, output_dir):
+    for env_key, env_name in envs.items():
+        plot_env(env_key, env_name, algorithm, results_dir, output_dir)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    plot_sac(ENVS, ALGORITHM, RESULTS_DIR, OUTPUT_PATH)
+    plot_all(ENVS, ALGORITHM, RESULTS_DIR, OUTPUT_DIR)
