@@ -3,138 +3,83 @@ import glob
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 from scipy.stats import gaussian_kde
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-RESULTS_DIR  = "results"
-OUTPUT_PATH  = "plots/ppo_pendulum_kde_histogram.png"
-ALGORITHM    = "ppo_continuous_action"
-ENV_KEY      = "dm_control_pendulum-swingup-v0"
-ENV_NAME     = "Pendulum Swingup"
-N_BINS       = 100        # bins per seed curve (same as learning curve script)
-N_HIST_BINS  = 10         # number of histogram bins along the timestep axis
-N_KDE_POINTS = 300        # resolution of the KDE curve
-
+RESULTS_DIR = "results"
+OUTPUT_PATH = "plots/ppo_pendulum_kde_histogram.png"
+ALGORITHM   = "ppo_continuous_action"
+ENV_KEY     = "dm_control_pendulum-swingup-v0"
+ENV_NAME    = "Pendulum Swingup"
+N_BINS      = 10          # number of histogram bins
+N_KDE_PTS   = 500         # resolution of the KDE curve
+PERF_MIN    = 0
+PERF_MAX    = 1000
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def load_seed_curves(env_key, algorithm, results_dir):
+def load_final_returns(env_key, algorithm, results_dir):
+    """Load the final episodic return (last logged value) for each seed."""
     pattern = os.path.join(results_dir, f"{env_key}__{algorithm}__*_results.csv")
     files = sorted(glob.glob(pattern))
     if not files:
         raise FileNotFoundError(f"No files found for {env_key}")
 
-    curves = []
+    final_returns = []
     for f in files:
         df = pd.read_csv(f)
-        if df.empty or len(df) < 2:
+        if df.empty:
             continue
-        timesteps = df["timestep"].values.astype(float)
-        returns   = df["episodic_return"].values.astype(float)
-        curves.append((timesteps, returns))
+        # take the mean of the last 10 episodes as a stable estimate of final performance
+        last_returns = df["episodic_return"].values[-10:]
+        final_returns.append(last_returns.mean())
 
-    return curves
-
-
-def bin_curve(timesteps, returns, n_bins=N_BINS):
-    t_min, t_max = timesteps[0], timesteps[-1]
-    edges = np.linspace(t_min, t_max, n_bins + 1)
-    bin_centers = (edges[:-1] + edges[1:]) / 2
-
-    binned_returns = np.full(n_bins, np.nan)
-    for i in range(n_bins):
-        mask = (timesteps >= edges[i]) & (timesteps < edges[i + 1])
-        if mask.sum() > 0:
-            binned_returns[i] = returns[mask].mean()
-
-    for i in range(1, n_bins):
-        if np.isnan(binned_returns[i]):
-            binned_returns[i] = binned_returns[i - 1]
-
-    return bin_centers, binned_returns
+    return np.array(final_returns)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Plotting ──────────────────────────────────────────────────────────────────
 
 def plot_kde_histogram(env_key, env_name, algorithm, results_dir, output_path):
-    curves = load_seed_curves(env_key, algorithm, results_dir)
-    print(f"Loaded {len(curves)} seed curves")
+    final_returns = load_final_returns(env_key, algorithm, results_dir)
+    print(f"Loaded {len(final_returns)} seeds")
 
-    # bin each seed curve
-    binned_curves = []
-    for timesteps, returns in curves:
-        x_bin, y_bin = bin_curve(timesteps, returns, n_bins=N_BINS)
-        binned_curves.append((x_bin, y_bin))
+    perf_grid = np.linspace(PERF_MIN, PERF_MAX, N_KDE_PTS)
 
-    # interpolate all seeds onto a common timestep grid for histogram bins
-    x_min = max(c[0][0]  for c in binned_curves)
-    x_max = min(c[0][-1] for c in binned_curves)
-    x_common = np.linspace(x_min, x_max, N_BINS)
+    # Gaussian KDE with Scott's rule
+    kde = gaussian_kde(final_returns, bw_method="scott")
+    kde_vals = kde(perf_grid)
 
-    # shape: (n_seeds, N_BINS)
-    y_matrix = np.array([
-        np.interp(x_common, x_bin, y_bin)
-        for x_bin, y_bin in binned_curves
-    ])
+    fig, ax = plt.subplots(figsize=(6, 7))
 
-    # define histogram bin edges along the timestep axis
-    hist_edges = np.linspace(x_min, x_max, N_HIST_BINS + 1)
-    hist_centers = (hist_edges[:-1] + hist_edges[1:]) / 2
-    hist_width = hist_edges[1] - hist_edges[0]
+    # horizontal histogram — bars extend rightward, performance on Y axis
+    ax.hist(
+        final_returns,
+        bins=N_BINS,
+        range=(PERF_MIN, PERF_MAX),
+        orientation="horizontal",
+        color="steelblue",
+        alpha=0.4,
+        density=True,        # normalise to density so KDE is on the same scale
+        edgecolor="white",
+        linewidth=0.5,
+    )
 
-    # performance axis for KDE evaluation
-    perf_min, perf_max = 0, 1000
-    perf_grid = np.linspace(perf_min, perf_max, N_KDE_POINTS)
+    # KDE line
+    ax.plot(kde_vals, perf_grid, color="steelblue", linewidth=2.5)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    for bin_idx in range(N_HIST_BINS):
-        # collect all seed values that fall in this timestep bin
-        t_lo, t_hi = hist_edges[bin_idx], hist_edges[bin_idx + 1]
-        col_mask = (x_common >= t_lo) & (x_common < t_hi)
-        values = y_matrix[:, col_mask].flatten()
-
-        if len(values) < 2:
-            continue
-
-        # Gaussian KDE with Scott's rule bandwidth
-        kde = gaussian_kde(values, bw_method="scott")
-        kde_vals = kde(perf_grid)
-
-        # normalise KDE to fit within the histogram bin width for display
-        kde_vals_norm = kde_vals / kde_vals.max() * hist_width * 0.9
-
-        # draw KDE curve centred on the histogram bin
-        ax.plot(
-            hist_centers[bin_idx] + kde_vals_norm,
-            perf_grid,
-            color="steelblue",
-            linewidth=1.2,
-        )
-        ax.fill_betweenx(
-            perf_grid,
-            hist_centers[bin_idx],
-            hist_centers[bin_idx] + kde_vals_norm,
-            color="steelblue",
-            alpha=0.3,
-        )
-
-    ax.set_xlabel("Environment Steps", fontsize=12)
     ax.set_ylabel("Episodic Return", fontsize=12)
+    ax.set_xlabel("Density", fontsize=12)
+    ax.set_ylim(PERF_MIN, PERF_MAX)
     ax.set_title(
-        f"{env_name} — PPO (100 seeds)\nGaussian KDE per timestep bin (Scott 1992), {N_HIST_BINS} bins",
-        fontsize=13,
+        f"{env_name} — PPO (100 seeds)\n"
+        f"Final performance distribution\n"
+        f"Gaussian KDE, Scott's rule ({N_BINS} bins)",
+        fontsize=12,
         fontweight="bold",
     )
-    ax.set_ylim(perf_min, perf_max)
-    ax.set_xlim(x_min - hist_width * 0.5, x_max + hist_width * 0.5)
-    ax.xaxis.set_major_formatter(ticker.FuncFormatter(
-        lambda x, _: f"{int(x/1e6)}M" if x >= 1e6 else f"{int(x/1e3)}K"
-    ))
-    ax.grid(True, alpha=0.3)
+    ax.grid(True, alpha=0.3, axis="y")
 
     plt.tight_layout()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -142,6 +87,8 @@ def plot_kde_histogram(env_key, env_name, algorithm, results_dir, output_path):
     print(f"Plot saved to {output_path}")
     plt.close()
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     plot_kde_histogram(ENV_KEY, ENV_NAME, ALGORITHM, RESULTS_DIR, OUTPUT_PATH)
