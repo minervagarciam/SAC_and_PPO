@@ -20,61 +20,67 @@ PERF_MAX    = 1000
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def load_final_returns(env_key, algorithm, results_dir):
-    """Load the final episodic return (last logged value) for each seed."""
+def load_mean_returns(env_key, algorithm, results_dir):
+    """Compute the sample mean episodic return across the entire run for each seed."""
     pattern = os.path.join(results_dir, f"{env_key}__{algorithm}__*_results.csv")
     files = sorted(glob.glob(pattern))
     if not files:
         raise FileNotFoundError(f"No files found for {env_key}")
 
-    final_returns = []
+    mean_returns = []
     for f in files:
         df = pd.read_csv(f)
         if df.empty:
             continue
-        # take the mean of the last 10 episodes as a stable estimate of final performance
-        last_returns = df["episodic_return"].values[-10:]
-        final_returns.append(last_returns.mean())
+        mean_returns.append(df["episodic_return"].mean())
 
-    return np.array(final_returns)
+    return np.array(mean_returns)
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
 def plot_kde_histogram(env_key, env_name, algorithm, results_dir, output_path):
-    final_returns = load_final_returns(env_key, algorithm, results_dir)
-    print(f"Loaded {len(final_returns)} seeds")
+    mean_returns = load_mean_returns(env_key, algorithm, results_dir)
+    print(f"Loaded {len(mean_returns)} seeds")
 
     perf_grid = np.linspace(PERF_MIN, PERF_MAX, N_KDE_PTS)
 
     # Gaussian KDE with Scott's rule
-    kde = gaussian_kde(final_returns, bw_method="scott")
+    kde = gaussian_kde(mean_returns, bw_method="scott")
     kde_vals = kde(perf_grid)
+
+    # bin width needed to convert density to probability
+    bin_width = (PERF_MAX - PERF_MIN) / N_BINS
 
     fig, ax = plt.subplots(figsize=(6, 7))
 
-    # horizontal histogram — bars extend rightward, performance on Y axis
-    ax.hist(
-        final_returns,
-        bins=N_BINS,
-        range=(PERF_MIN, PERF_MAX),
-        orientation="horizontal",
-        color="steelblue",
-        alpha=0.4,
-        density=True,        # normalise to density so KDE is on the same scale
-        edgecolor="white",
-        linewidth=0.5,
-    )
+    # horizontal histogram with empirical probability (density * bin_width)
+    counts, edges = np.histogram(mean_returns, bins=N_BINS, range=(PERF_MIN, PERF_MAX))
+    probs = counts / counts.sum()  # empirical probability: each bar sums to 1 total
 
-    # KDE line
-    ax.plot(kde_vals, perf_grid, color="steelblue", linewidth=2.5)
+    for i in range(N_BINS):
+        bin_lo = edges[i]
+        bin_hi = edges[i + 1]
+        bin_mid = (bin_lo + bin_hi) / 2
+        ax.barh(
+            bin_mid,
+            probs[i],
+            height=(bin_hi - bin_lo) * 0.9,
+            color="steelblue",
+            alpha=0.4,
+            edgecolor="white",
+            linewidth=0.5,
+        )
 
-    ax.set_ylabel("Episodic Return", fontsize=12)
-    ax.set_xlabel("Density", fontsize=12)
+    # KDE line scaled to probability (density * bin_width)
+    ax.plot(kde_vals * bin_width, perf_grid, color="steelblue", linewidth=2.5)
+
+    ax.set_ylabel("Sample Mean Return (full run)", fontsize=12)
+    ax.set_xlabel("Empirical Probability", fontsize=12)
     ax.set_ylim(PERF_MIN, PERF_MAX)
     ax.set_title(
         f"{env_name} — PPO (100 seeds)\n"
-        f"Final performance distribution\n"
+        f"Sample mean return distribution\n"
         f"Gaussian KDE, Scott's rule ({N_BINS} bins)",
         fontsize=12,
         fontweight="bold",
