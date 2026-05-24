@@ -75,13 +75,11 @@ def plot_kde_histogram(env_key, env_name, algorithm, results_dir, output_path):
     # KDE line scaled to probability (density * bin_width)
     ax.plot(kde_vals * bin_width, perf_grid, color="steelblue", linewidth=2.5)
 
-    ax.set_ylabel("Sample Mean Return (full run)", fontsize=12)
+    ax.set_ylabel("Performance", fontsize=12)
     ax.set_xlabel("Empirical Probability", fontsize=12)
     ax.set_ylim(PERF_MIN, PERF_MAX)
     ax.set_title(
-        f"{env_name} — PPO (100 seeds)\n"
-        f"Sample mean return distribution\n"
-        f"Gaussian KDE, Scott's rule ({N_BINS} bins)",
+        f"{env_name} — PPO (100 seeds)\n",
         fontsize=12,
         fontweight="bold",
     )
