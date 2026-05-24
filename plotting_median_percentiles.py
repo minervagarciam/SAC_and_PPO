@@ -8,9 +8,9 @@ import matplotlib.ticker as ticker
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-RESULTS_DIR = "results"
+RESULTS_DIR = "results/Third set"
 OUTPUT_DIR  = "plots"
-ALGORITHM   = "ppo_continuous_action"
+ALGORITHM   = "sac_continuous_action"
 
 ENVS = {
     "dm_control_pendulum-swingup-v0":  "Pendulum Swingup",
@@ -135,7 +135,7 @@ def plot_env(env_key, env_name, algorithm, results_dir, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     # use the env_key as the filename, replacing slashes just in case
     safe_name = env_key.replace("/", "_")
-    output_path = os.path.join(output_dir, f"ppo_{safe_name}.png")
+    output_path = os.path.join(output_dir, f"sac_{safe_name}.png")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {output_path}")
     plt.close()
