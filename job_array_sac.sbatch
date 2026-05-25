@@ -2,11 +2,10 @@
 #SBATCH --account=aip-ashique
 #SBATCH -o logs/job-%A-%a.out
 #SBATCH -e logs/job-%A-%a.err
-#SBATCH --time=12:00:00
-#SBATCH --mem-per-cpu=8G
+#SBATCH --time=11:59:00
+#SBATCH --mem-per-cpu=2G
 #SBATCH --cpus-per-task=5
-#SBATCH --gres=gpu:1
-#SBATCH --array=0-99
+#SBATCH --array=0-10
 
 export MUJOCO_GL=disabled
 
